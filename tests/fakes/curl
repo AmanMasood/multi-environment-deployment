@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fake curl: healthy unless the running version is listed in $FAKE_STATE/broken_versions.
+set -euo pipefail
+url="${*: -1}"
+port="$(sed -n 's/.*localhost:\([0-9]*\).*/\1/p' <<<"$url")"
+case "$port" in 8081) p=dev ;; 8082) p=staging ;; 8083) p=production ;; *) exit 7 ;; esac
+running="$(cat "$FAKE_STATE/${p}.running" 2>/dev/null || true)"
+[[ -n "$running" ]] || exit 7
+if grep -qx "$running" "$FAKE_STATE/broken_versions" 2>/dev/null; then exit 22; fi
+echo '{"status":"ok"}'

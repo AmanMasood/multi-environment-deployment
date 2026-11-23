@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fake docker CLI for unit-testing deploy.sh without a Docker daemon.
+# Records the version that "is running" per compose project in $FAKE_STATE.
+set -euo pipefail
+args="$*"
+project="$(sed -n 's/.*-p \([a-z]*\).*/\1/p' <<<"$args")"
+echo "docker $args" >> "$FAKE_STATE/calls.log"
+if [[ "$args" == *" up "* ]]; then
+  echo "${APP_VERSION}" > "$FAKE_STATE/${project}.running"
+fi

@@ -1,0 +1,14 @@
+# Production overrides: more replicas, resource limits, log rotation.
+services:
+  app:
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

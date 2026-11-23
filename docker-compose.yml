@@ -1,0 +1,26 @@
+# Base definition shared by every environment.
+# Each environment runs as its own compose project: <env> (dev, staging, production).
+services:
+  app:
+    image: ${IMAGE:-multienv-app}:${APP_VERSION:-latest}
+    env_file: ./environments/${APP_ENV}.env
+    environment:
+      APP_ENV: ${APP_ENV}
+      APP_VERSION: ${APP_VERSION:-latest}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "localhost:8000/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${HTTP_PORT}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
