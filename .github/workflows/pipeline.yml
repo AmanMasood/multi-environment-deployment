@@ -1,0 +1,76 @@
+name: Multi-environment pipeline
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      promote_to_production:
+        description: "Promote the staging version to production"
+        type: boolean
+        default: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r app/requirements.txt pytest && cd app && python -m pytest -q
+      - run: shellcheck -S warning scripts/*.sh tests/*.sh
+      - name: Deploy/rollback logic tests (fakes)
+        run: bash tests/test_deploy.sh
+
+  e2e-environments:
+    # Runs all three environments side by side on the runner and proves promotion + auto-rollback
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build releases 1.0.0 (good) and 1.1.0 (deliberately broken)
+        run: |
+          docker build -t multienv-app:1.0.0 --build-arg APP_VERSION=1.0.0 app
+          docker build -t multienv-app:1.1.0 --build-arg APP_VERSION=1.1.0 --build-arg APP_BROKEN=true app
+      - name: Deploy 1.0.0 dev -> staging -> production
+        run: |
+          ./scripts/deploy.sh dev 1.0.0
+          ./scripts/deploy.sh staging 1.0.0
+          ./scripts/deploy.sh production 1.0.0
+          ./scripts/status.sh
+          curl -fsS localhost:8083/ | grep -q PRODUCTION
+      - name: Broken 1.1.0 to staging must roll back automatically
+        run: |
+          if ./scripts/deploy.sh staging 1.1.0; then echo "broken release passed?!"; exit 1; fi
+          curl -fsS localhost:8082/health | tee /dev/stderr | grep -q '"version":"1.0.0"'
+          ./scripts/status.sh
+      - name: Production refuses a version staging never ran
+        run: |
+          if ./scripts/deploy.sh production 1.1.0; then exit 1; fi
+          echo "guard OK"
+      - if: always()
+        run: |
+          cat .deployments/*.history || true
+          for p in dev staging production; do docker compose -p $p down || true; done
+
+  # Real-server deployments: develop -> dev, main -> staging, manual -> production
+  deploy:
+    needs: e2e-environments
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.promote_to_production == 'true' && 'production' || (github.ref == 'refs/heads/main' && 'staging' || 'dev') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to target server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          TARGET_ENV: ${{ github.event.inputs.promote_to_production == 'true' && 'production' || (github.ref == 'refs/heads/main' && 'staging' || 'dev') }}
+        run: |
+          if [[ -z "$DEPLOY_HOST" ]]; then
+            echo "::notice::DEPLOY_HOST not configured - skipping remote deploy (portfolio demo)"; exit 0
+          fi
+          install -m 600 /dev/null key && echo "$DEPLOY_KEY" > key
+          ssh -i key -o StrictHostKeyChecking=accept-new deploy@$DEPLOY_HOST \
+            "cd /opt/multienv && git pull && ./scripts/deploy.sh $TARGET_ENV sha-${GITHUB_SHA::7}"
